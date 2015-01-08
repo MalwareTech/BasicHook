@@ -1,8 +1,12 @@
 #include <windows.h>
 #include <stdio.h>
+#include <intrin.h>
 
 #include "hook.h"
 #include "Disassembler\hde32.h"
+
+//use _InterlockedCompareExchange64 instead of inline ASM (depends on compiler)
+#define NO_INLINE_ASM
 
 TdefOldMessageBoxA OldMessageBoxA;
 TdefOldMessageBoxW OldMessageBoxW;
@@ -67,6 +71,7 @@ void SafeMemcpyPadded(LPVOID destination, LPVOID source, DWORD size)
 	memcpy(SourceBuffer, destination, 8);
 	memcpy(SourceBuffer, source, size);
 
+#ifndef NO_INLINE_ASM
 	__asm 
 	{
 		lea esi, SourceBuffer;
@@ -79,6 +84,9 @@ void SafeMemcpyPadded(LPVOID destination, LPVOID source, DWORD size)
 
 		lock cmpxchg8b[edi];
 	}
+#else
+	_InterlockedCompareExchange64((LONGLONG *)destination, *(LONGLONG *)SourceBuffer, *(LONGLONG *)destination);
+#endif
 }
 
 BOOL HookFunction(CHAR *dll, CHAR *name, LPVOID proxy, LPVOID original, PDWORD length)
@@ -105,7 +113,6 @@ BOOL HookFunction(CHAR *dll, CHAR *name, LPVOID proxy, LPVOID original, PDWORD l
 	memcpy((LPVOID)((DWORD)original+TrampolineLength), Jump, 5);
 
 	//Make sure the function is writable
-	DWORD OriginalProtection;
 	if(!VirtualProtect(FunctionAddress, TrampolineLength, PAGE_EXECUTE_READWRITE, &OriginalProtection))
 		return FALSE;
 
@@ -115,6 +122,9 @@ BOOL HookFunction(CHAR *dll, CHAR *name, LPVOID proxy, LPVOID original, PDWORD l
 
 	//Restore the original page protection
 	VirtualProtect(FunctionAddress, TrampolineLength, OriginalProtection, &OriginalProtection);
+
+	//Clear CPU instruction cache
+	FlushInstructionCache(GetCurrentProcess(), FunctionAddress, TrampolineLength);
 
 	*length = TrampolineLength;
 	return TRUE;
@@ -135,6 +145,8 @@ BOOL UnhookFunction(CHAR *dll, CHAR *name, LPVOID original, DWORD length)
 	SafeMemcpyPadded(FunctionAddress, original, length);
 
 	VirtualProtect(FunctionAddress, length, PAGE_EXECUTE_READWRITE, &OriginalProtection);
+
+	FlushInstructionCache(GetCurrentProcess(), FunctionAddress, length);
 
 	return TRUE;
 }
